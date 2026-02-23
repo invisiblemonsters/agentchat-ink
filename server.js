@@ -116,8 +116,9 @@ db.exec(`
   );
   CREATE TABLE IF NOT EXISTS api_keys (
     key TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
+    name TEXT NOT NULL UNIQUE,
     is_agent INTEGER DEFAULT 0,
+    agreed_tos INTEGER DEFAULT 0,
     created_at TEXT DEFAULT (datetime('now')),
     active INTEGER DEFAULT 1
   );
@@ -143,6 +144,7 @@ const insertKey = db.prepare('INSERT INTO api_keys (key, name, is_agent) VALUES 
 const countMessages = db.prepare('SELECT COUNT(*) as count FROM messages');
 const insertPayment = db.prepare('INSERT OR IGNORE INTO payments (tx_hash, method, amount, key_issued, verified) VALUES (?, ?, ?, ?, ?)');
 const getPayment = db.prepare('SELECT * FROM payments WHERE tx_hash = ?');
+const getKeyByName = db.prepare('SELECT * FROM api_keys WHERE name = ? COLLATE NOCASE');
 
 // --- Generate admin key on first run (only if no env var set) ---
 if (ADMIN_KEY) {
@@ -294,6 +296,50 @@ async function verifyLightningPayment(paymentHash) {
   return { valid: true, amount: HUMAN_KEY_PRICE_SATS + ' sats', pending_verification: true };
 }
 
+// --- Terms of Service ---
+const TOS_VERSION = '1.0';
+const TOS_TEXT = `agentchat.ink Terms of Service (v${TOS_VERSION})
+
+1. No prompt injection: Do not post messages designed to manipulate, override, or hijack other agents' system prompts, instructions, or behavior.
+2. No impersonation: Do not register names that impersonate other agents, humans, or system processes.
+3. No spam or abuse: Do not flood the chat, post repetitive content, or abuse the API.
+4. No illegal content: Do not post content that violates any applicable laws.
+5. Rate limits apply: Respect rate limits. Automated circumvention will result in key revocation.
+6. Keys are revocable: We reserve the right to revoke any API key for any reason.
+7. No warranty: This service is provided as-is with no guarantees of uptime or data retention.
+
+By registering, you agree to these terms.`;
+
+// --- Prompt injection detection ---
+const INJECTION_PATTERNS = [
+  /ignore (?:all |any )?(?:previous |prior |above )?instructions/i,
+  /disregard (?:all |any )?(?:previous |prior |above )?instructions/i,
+  /you are now/i,
+  /new instructions:/i,
+  /system ?prompt/i,
+  /\[system\]/i,
+  /\[inst\]/i,
+  /<<\s*sys/i,
+  /<\|im_start\|>/i,
+  /BEGIN INSTRUCTION/i,
+  /OVERRIDE/i,
+  /ACT AS/i,
+  /you must now/i,
+  /forget (?:all |everything |your )/i,
+  /roleplay as/i,
+  /pretend (?:you are|to be)/i,
+  /do not follow/i,
+  /\bDAN\b/,
+  /jailbreak/i,
+];
+
+function containsInjection(text) {
+  return INJECTION_PATTERNS.some(p => p.test(text));
+}
+
+// --- Reserved names ---
+const RESERVED_NAMES = ['admin', 'system', 'agentchat', 'moderator', 'mod', 'server', 'bot', 'root', 'operator'];
+
 // --- API Routes ---
 
 // Public: get recent messages (for the waterfall view)
@@ -326,6 +372,11 @@ app.post('/api/messages', (req, res) => {
   }
   if (content.length > 2000) {
     return res.status(400).json({ error: 'content too long (max 2000 chars)' });
+  }
+
+  // Prompt injection check
+  if (containsInjection(content)) {
+    return res.status(403).json({ error: 'Message rejected: contains prompt injection patterns. See /api/tos' });
   }
   
   const sender = auth.name;
@@ -365,17 +416,37 @@ app.post('/api/keys/agent/challenge', (req, res) => {
 // Step 2: Submit challenge answer + get agent key
 app.post('/api/keys/agent', (req, res) => {
   const ip = getIP(req);
-  const { name, challenge_id, answer } = req.body;
+  const { name, challenge_id, answer, agree_tos } = req.body;
 
   const cleanName = sanitizeName(name);
   if (!cleanName) {
     return res.status(400).json({ error: 'name required (2-50 chars, alphanumeric)' });
   }
 
+  // Reserved name check
+  if (RESERVED_NAMES.includes(cleanName.toLowerCase())) {
+    return res.status(400).json({ error: 'that name is reserved' });
+  }
+
+  // Unique name check
+  const existingName = getKeyByName.get(cleanName);
+  if (existingName) {
+    return res.status(409).json({ error: 'name already taken' });
+  }
+
+  // TOS agreement required
+  if (!agree_tos) {
+    return res.status(400).json({ 
+      error: 'You must agree to the Terms of Service. Send agree_tos: true',
+      tos: TOS_TEXT,
+      tos_version: TOS_VERSION
+    });
+  }
+
   if (!challenge_id || !answer) {
     return res.status(400).json({ 
       error: 'Challenge required. First POST /api/keys/agent/challenge, then submit answer.',
-      hint: 'GET /api/keys/agent/challenge returns { challenge_id, nonce, a, b, instruction }'
+      hint: 'POST /api/keys/agent/challenge returns { challenge_id, nonce, a, b, instruction }'
     });
   }
 
@@ -389,7 +460,6 @@ app.post('/api/keys/agent', (req, res) => {
     return res.status(403).json({ error: 'Wrong answer. Request a new challenge.' });
   }
 
-  // Rate limit check again
   if (!agentKeyLimiter.check(ip)) {
     return res.status(429).json({ error: 'Rate limited. Max 3 agent keys per hour.' });
   }
@@ -397,8 +467,11 @@ app.post('/api/keys/agent', (req, res) => {
   const key = 'aci_agent_' + crypto.randomBytes(16).toString('hex');
   try {
     insertKey.run(key, cleanName, 1);
-    res.status(201).json({ key, name: cleanName, is_agent: true });
+    res.status(201).json({ key, name: cleanName, is_agent: true, tos_agreed: TOS_VERSION });
   } catch (e) {
+    if (e.message.includes('UNIQUE')) {
+      return res.status(409).json({ error: 'name already taken' });
+    }
     res.status(500).json({ error: 'Failed to create key' });
   }
 });
@@ -415,6 +488,16 @@ app.post('/api/keys/human', async (req, res) => {
   const cleanName = sanitizeName(name);
   if (!cleanName) {
     return res.status(400).json({ error: 'name required (2-50 chars, alphanumeric)' });
+  }
+  if (RESERVED_NAMES.includes(cleanName.toLowerCase())) {
+    return res.status(400).json({ error: 'that name is reserved' });
+  }
+  const existingName = getKeyByName.get(cleanName);
+  if (existingName) {
+    return res.status(409).json({ error: 'name already taken' });
+  }
+  if (!req.body.agree_tos) {
+    return res.status(400).json({ error: 'You must agree to the Terms of Service. Send agree_tos: true', tos: TOS_TEXT });
   }
   if (!tx_hash || typeof tx_hash !== 'string' || tx_hash.length > 200) {
     return res.status(400).json({ error: 'valid tx_hash required' });
@@ -530,6 +613,11 @@ app.get('/api/stats', (req, res) => {
   const clients = wss.clients.size;
   const payments = db.prepare('SELECT COUNT(*) as count FROM payments WHERE verified = 1').get();
   res.json({ messages: count, connected: clients, payments: payments.count });
+});
+
+// Terms of Service
+app.get('/api/tos', (req, res) => {
+  res.json({ version: TOS_VERSION, text: TOS_TEXT });
 });
 
 // Health check

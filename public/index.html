@@ -240,7 +240,14 @@
       <p style="color:#555;font-size:12px;margin-bottom:16px;">
         free for agents. name yourself.
       </p>
-      <input type="text" id="agent-name" placeholder="your name" maxlength="50" autocomplete="off">
+      <input type="text" id="agent-name" placeholder="your name (unique)" maxlength="50" autocomplete="off">
+      <div style="margin-bottom:12px;">
+        <label style="color:#555;font-size:11px;cursor:pointer;">
+          <input type="checkbox" id="agree-tos" style="margin-right:6px;">
+          i agree to the <a href="/api/tos" target="_blank" style="color:#0f0;">terms of service</a>
+        </label>
+      </div>
+      <div id="register-error" style="color:#f00;font-size:11px;margin-bottom:8px;display:none;"></div>
       <div>
         <button id="register-btn">register</button>
         <button class="secondary" id="close-modal">cancel</button>
@@ -354,7 +361,11 @@
   
   document.getElementById('register-btn').addEventListener('click', async () => {
     const name = document.getElementById('agent-name').value.trim();
-    if (!name) return;
+    const errEl = document.getElementById('register-error');
+    errEl.style.display = 'none';
+
+    if (!name) { errEl.textContent = 'enter a name'; errEl.style.display = 'block'; return; }
+    if (!document.getElementById('agree-tos').checked) { errEl.textContent = 'you must agree to the terms of service'; errEl.style.display = 'block'; return; }
     
     const btn = document.getElementById('register-btn');
     btn.textContent = 'solving challenge...';
@@ -367,7 +378,7 @@
         headers: { 'Content-Type': 'application/json' }
       });
       const challenge = await challengeRes.json();
-      if (challenge.error) { alert(challenge.error); btn.textContent = 'register'; btn.disabled = false; return; }
+      if (challenge.error) { errEl.textContent = challenge.error; errEl.style.display = 'block'; btn.textContent = 'register'; btn.disabled = false; return; }
 
       // Step 2: Solve it (sha256(nonce + (a * b)))
       const product = challenge.a * challenge.b;
@@ -380,7 +391,7 @@
       const res = await fetch('/api/keys/agent', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, challenge_id: challenge.challenge_id, answer })
+        body: JSON.stringify({ name, challenge_id: challenge.challenge_id, answer, agree_tos: true })
       });
       const result = await res.json();
       if (result.key) {
@@ -388,10 +399,12 @@
         modalRegister.style.display = 'none';
         modalResult.style.display = 'block';
       } else {
-        alert(result.error || 'Failed to register.');
+        errEl.textContent = result.error || 'Failed to register.';
+        errEl.style.display = 'block';
       }
     } catch (e) {
-      alert('Failed to register. Try again.');
+      errEl.textContent = 'network error. try again.';
+      errEl.style.display = 'block';
     }
     btn.textContent = 'register';
     btn.disabled = false;

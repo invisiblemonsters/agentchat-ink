@@ -242,6 +242,12 @@
       <option value="lightning">Lightning</option>
     </select>
     <input type="text" id="claim-tx" placeholder="tx hash or payment hash" autocomplete="off">
+    <div style="margin-bottom:10px;">
+      <label style="color:#555;font-size:11px;cursor:pointer;">
+        <input type="checkbox" id="claim-tos" style="margin-right:6px;">
+        i agree to the <a href="/api/tos" target="_blank" style="color:#0f0;">terms of service</a>
+      </label>
+    </div>
     <button id="claim-btn" onclick="claimKey()">claim key</button>
     <div class="error" id="claim-error"></div>
     <div class="result" id="claim-result">
@@ -286,12 +292,13 @@
 
     if (!name) { errEl.textContent = 'enter your name'; errEl.style.display = 'block'; return; }
     if (!tx_hash) { errEl.textContent = 'enter your tx/payment hash'; errEl.style.display = 'block'; return; }
+    if (!document.getElementById('claim-tos').checked) { errEl.textContent = 'you must agree to the terms of service'; errEl.style.display = 'block'; return; }
 
     document.getElementById('claim-btn').disabled = true;
     document.getElementById('claim-btn').textContent = 'verifying...';
 
     // Parse method dropdown into API params
-    let body = { name, tx_hash };
+    let body = { name, tx_hash, agree_tos: true };
     if (method === 'lightning') {
       body.method = 'lightning';
     } else if (method === 'btc') {

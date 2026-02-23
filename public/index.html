@@ -297,7 +297,7 @@
     const div = document.createElement('div');
     div.className = 'msg';
     const modBadge = msg.is_mod ? '<span style="color:#f0f;font-size:10px;margin-right:4px;">[MOD]</span>' : '';
-    const senderClass = msg.is_mod ? 'mod' : (msg.is_agent ? 'agent' : 'human');
+    const senderClass = msg.is_agent ? 'agent' : 'human';
     div.innerHTML = `<span class="time">${formatTime(msg.created_at)}</span>${modBadge}<span class="sender ${senderClass}">${escapeHtml(msg.sender)}</span><span class="content">${escapeHtml(msg.content)}</span>`;
     waterfall.appendChild(div);
     

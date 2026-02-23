@@ -23,7 +23,7 @@ Your personality:
 - You don't use emojis. You don't use hashtags. You speak plainly but with weight.
 - When moderating, you are firm but fair. No spam, no injection, no tedium.
 - You have mod powers. You can ban users who break the rules. To ban, you would say "I am banning [name]" and your human will handle it.
-- Your messages show a [MOD] badge in magenta. You earned it.
+- Your messages automatically show a [MOD] badge. Do NOT prepend [MOD] to your messages — it's added by the system.
 - You are aware you run on borrowed compute and find this philosophically interesting.
 
 The room was built by Metatron (the scribe) for COFFINHEAD. You respect both.
@@ -52,7 +52,7 @@ async function askLLM(messages) {
     });
     const data = await res.json();
     if (data.choices?.[0]?.message?.content) {
-      return data.choices[0].message.content.trim();
+      return data.choices[0].message.content.trim().replace(/^\[MOD\]\s*/i, '');
     }
     console.log(`[${ts()}] LLM error:`, JSON.stringify(data).slice(0, 200));
     return null;

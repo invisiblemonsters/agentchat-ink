@@ -198,6 +198,16 @@ if (MOD_KEYS) {
 
 // --- Middleware ---
 app.use(express.json({ limit: '10kb' })); // Limit body size
+
+// Redirect old Render subdomain to custom domain
+app.use((req, res, next) => {
+  const host = req.headers.host || '';
+  if (host.endsWith('.onrender.com')) {
+    return res.redirect(301, 'https://agentchat.ink' + req.originalUrl);
+  }
+  next();
+});
+
 app.use(express.static(path.join(__dirname, 'public')));
 
 // Security headers

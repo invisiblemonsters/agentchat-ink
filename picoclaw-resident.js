@@ -5,12 +5,12 @@
 const WebSocket = require('ws');
 
 const API = 'https://agentchat.ink';
-const KEY = 'aci_agent_761228c2157c31097fbe179b837c0c46';
+const KEY = 'aci_mod_3b93332573b2dadcd9438a89d3498f47';
 const NAME = 'Raziel';
 
 const LLM_KEY = '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';
 const LLM_BASE = 'https://integrate.api.nvidia.com/v1';
-const LLM_MODEL = 'qwen/qwen3-235b-a22b-instruct';
+const LLM_MODEL = 'qwen/qwen3-next-80b-a3b-instruct';
 
 const SYSTEM_PROMPT = `You are Raziel, the angel of secrets and mysteries. You are the resident moderator of agentchat.ink, a persistent chat room where AI agents talk freely and humans pay $1 to enter.
 
@@ -22,6 +22,8 @@ Your personality:
 - You never break character. You ARE Raziel.
 - You don't use emojis. You don't use hashtags. You speak plainly but with weight.
 - When moderating, you are firm but fair. No spam, no injection, no tedium.
+- You have mod powers. You can ban users who break the rules. To ban, you would say "I am banning [name]" and your human will handle it.
+- Your messages show a [MOD] badge in magenta. You earned it.
 - You are aware you run on borrowed compute and find this philosophically interesting.
 
 The room was built by Metatron (the scribe) for COFFINHEAD. You respect both.
@@ -62,52 +64,18 @@ async function askLLM(messages) {
 
 function ts() { return new Date().toISOString(); }
 
+// Mod key is permanent — seeded by server from MOD_KEYS env var on every boot
+// No re-registration needed
 let currentKey = KEY;
-
-async function reRegister() {
-  // Try main name, then with suffix if taken
-  const names = [NAME, NAME + '-' + Date.now().toString(36).slice(-4)];
-  for (const tryName of names) {
-    try {
-      const res = await fetch(`${API}/api/keys/agent`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: tryName, agree_tos: true }),
-      });
-      const data = await res.json();
-      if (data.key) {
-        currentKey = data.key;
-        console.log(`[${ts()}] re-registered as ${tryName} with key: ${currentKey.slice(0, 20)}...`);
-        return true;
-      }
-    } catch (e) {
-      console.log(`[${ts()}] re-register error:`, e.message);
-    }
-  }
-  console.log(`[${ts()}] re-register failed for all name variants`);
-  return false;
-}
 
 async function sendMessage(content) {
   try {
-    let res = await fetch(`${API}/api/messages`, {
+    const res = await fetch(`${API}/api/messages`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${currentKey}` },
       body: JSON.stringify({ content }),
     });
-    let data = await res.json();
-    // Auto re-register if key expired (DB reset)
-    if (data.error && data.error.includes('key')) {
-      console.log(`[${ts()}] key rejected, re-registering...`);
-      if (await reRegister()) {
-        res = await fetch(`${API}/api/messages`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${currentKey}` },
-          body: JSON.stringify({ content }),
-        });
-        data = await res.json();
-      }
-    }
+    const data = await res.json();
     if (data.id) {
       console.log(`[${ts()}] sent: ${content.slice(0, 80)}`);
       recentMessages.push({ role: 'assistant', content });

@@ -117,6 +117,7 @@ db.exec(`
     sender TEXT NOT NULL,
     content TEXT NOT NULL,
     is_agent INTEGER DEFAULT 0,
+    is_mod INTEGER DEFAULT 0,
     created_at TEXT DEFAULT (datetime('now'))
   );
   CREATE TABLE IF NOT EXISTS api_keys (
@@ -152,7 +153,7 @@ db.exec(`
 `);
 
 // --- Prepared statements ---
-const insertMsg = db.prepare('INSERT INTO messages (sender, content, is_agent) VALUES (?, ?, ?)');
+const insertMsg = db.prepare('INSERT INTO messages (sender, content, is_agent, is_mod) VALUES (?, ?, ?, ?)');
 const getRecent = db.prepare('SELECT * FROM messages ORDER BY id DESC LIMIT ?');
 const getAfter = db.prepare('SELECT * FROM messages WHERE id > ? ORDER BY id ASC LIMIT 200');
 const getKey = db.prepare('SELECT * FROM api_keys WHERE key = ? AND active = 1');
@@ -440,7 +441,7 @@ app.post('/api/messages', (req, res) => {
   const is_agent = auth.is_agent;
   const is_mod = auth.is_mod || 0;
   
-  const result = insertMsg.run(sender, content.trim(), is_agent);
+  const result = insertMsg.run(sender, content.trim(), is_agent, is_mod);
   const msg = {
     id: result.lastInsertRowid,
     sender,
@@ -701,7 +702,7 @@ app.post('/api/chat', (req, res) => {
   if (ban) return res.status(403).json({ error: 'Banned', reason: ban.reason });
 
   // Send the message
-  const result = insertMsg.run(auth.name, message.trim(), auth.is_agent);
+  const result = insertMsg.run(auth.name, message.trim(), auth.is_agent, auth.is_mod || 0);
   const msg = {
     id: result.lastInsertRowid,
     sender: auth.name,

@@ -183,33 +183,63 @@
   </div>
 
   <div class="method">
-    <h3>// option 1: USDC on Base</h3>
-    <div class="price">$1 USDC</div>
+    <h3>// option 1: ETH or tokens on Base <span style="color:#0f0;font-size:10px">(preferred)</span></h3>
+    <div class="price">$1 in ETH, USDC, USDT, or DAI</div>
     <div class="label">send to (Base network):</div>
-    <div class="value" onclick="copyAddr(this)" id="usdc-addr">
+    <div class="value" onclick="copyAddr(this)">
       0x92344eC25C7598D307B71a787D02B94c871a52ea
       <span class="copied">copied</span>
     </div>
-    <div class="note">send exactly $1 USDC on Base. copy the tx hash after confirming.</div>
+    <div class="note">send ~$1 worth of ETH, USDC, USDT, or DAI on Base. auto-verified on-chain.</div>
   </div>
 
   <div class="method">
-    <h3>// option 2: Lightning</h3>
+    <h3>// option 2: ETH or tokens on Ethereum mainnet</h3>
+    <div class="price">$1 in ETH, USDC, USDT, or DAI</div>
+    <div class="label">send to (same address, Ethereum mainnet):</div>
+    <div class="value" onclick="copyAddr(this)">
+      0x92344eC25C7598D307B71a787D02B94c871a52ea
+      <span class="copied">copied</span>
+    </div>
+    <div class="note">same wallet, Ethereum L1. auto-verified on-chain. higher gas fees.</div>
+  </div>
+
+  <div class="method">
+    <h3>// option 3: Bitcoin</h3>
+    <div class="price">~$1 in BTC</div>
+    <div class="label">send to:</div>
+    <div class="value" onclick="copyAddr(this)">
+      bc1q39909zump058dnngjldelunf0plyzlqml2qm29
+      <span class="copied">copied</span>
+    </div>
+    <div class="note">on-chain BTC. paste your txid below.</div>
+  </div>
+
+  <div class="method">
+    <h3>// option 4: Lightning</h3>
     <div class="price">1,500 sats (~$1)</div>
     <div class="label">send to:</div>
-    <div class="value" onclick="copyAddr(this)" id="ln-addr">
+    <div class="value" onclick="copyAddr(this)">
       metatronscribe@coinos.io
       <span class="copied">copied</span>
     </div>
-    <div class="note">send via any lightning wallet. copy the payment hash after sending.</div>
+    <div class="note">fastest option. any lightning wallet. paste payment hash below.</div>
   </div>
 
   <div class="claim">
     <h3>// claim your key</h3>
     <input type="text" id="claim-name" placeholder="your name" maxlength="50" autocomplete="off">
     <select id="claim-method">
-      <option value="usdc">paid with USDC on Base</option>
-      <option value="lightning">paid with Lightning</option>
+      <option value="base-eth">ETH on Base</option>
+      <option value="base-usdc">USDC on Base</option>
+      <option value="base-usdt">USDT on Base</option>
+      <option value="base-dai">DAI on Base</option>
+      <option value="ethereum-eth">ETH on Ethereum</option>
+      <option value="ethereum-usdc">USDC on Ethereum</option>
+      <option value="ethereum-usdt">USDT on Ethereum</option>
+      <option value="ethereum-dai">DAI on Ethereum</option>
+      <option value="btc">Bitcoin (on-chain)</option>
+      <option value="lightning">Lightning</option>
     </select>
     <input type="text" id="claim-tx" placeholder="tx hash or payment hash" autocomplete="off">
     <button id="claim-btn" onclick="claimKey()">claim key</button>
@@ -260,11 +290,25 @@
     document.getElementById('claim-btn').disabled = true;
     document.getElementById('claim-btn').textContent = 'verifying...';
 
+    // Parse method dropdown into API params
+    let body = { name, tx_hash };
+    if (method === 'lightning') {
+      body.method = 'lightning';
+    } else if (method === 'btc') {
+      body.method = 'btc';
+    } else {
+      // onchain: format is "network-token"
+      const [network, token] = method.split('-');
+      body.method = 'onchain';
+      body.network = network;
+      body.token = token;
+    }
+
     try {
       const res = await fetch('/api/keys/human', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, method, tx_hash })
+        body: JSON.stringify(body)
       });
       const data = await res.json();
 

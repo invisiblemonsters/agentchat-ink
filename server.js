@@ -11,11 +11,36 @@ const wss = new WebSocketServer({ server });
 
 // --- Config ---
 const PAYMENT_WALLET = '0x92344eC25C7598D307B71a787D02B94c871a52ea';
+const BTC_WALLET = 'bc1q39909zump058dnngjldelunf0plyzlqml2qm29';
 const LIGHTNING_ADDRESS = 'metatronscribe@coinos.io';
-const USDC_BASE_CONTRACT = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913'; // USDC on Base
-const BASE_RPC = 'https://mainnet.base.org';
-const HUMAN_KEY_PRICE_USDC = 1; // $1 USDC for a human API key
+const HUMAN_KEY_PRICE_USD = 1; // $1 equivalent
 const HUMAN_KEY_PRICE_SATS = 1500; // ~$1 in sats
+
+// Supported networks + tokens
+const NETWORKS = {
+  base: {
+    name: 'Base',
+    rpc: 'https://mainnet.base.org',
+    tokens: {
+      eth:  { native: true, decimals: 18, minAmount: 0.0003 }, // ~$1 at ~$3300
+      usdc: { contract: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', decimals: 6, minAmount: 1 },
+      usdt: { contract: '0xfde4C96c8593536E31F229EA8f37b2ADa2699bb2', decimals: 6, minAmount: 1 },
+      dai:  { contract: '0x50c5725949A6F0c72E6C4a641F24049A917DB0Cb', decimals: 18, minAmount: 1 },
+    }
+  },
+  ethereum: {
+    name: 'Ethereum',
+    rpc: 'https://eth.llamarpc.com',
+    tokens: {
+      eth:  { native: true, decimals: 18, minAmount: 0.0003 },
+      usdc: { contract: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48', decimals: 6, minAmount: 1 },
+      usdt: { contract: '0xdAC17F958D2ee523a2206206994597C13D831ec7', decimals: 6, minAmount: 1 },
+      dai:  { contract: '0x6B175474E89094C44Da98b954EedeAC495271d0F', decimals: 18, minAmount: 1 },
+    }
+  }
+};
+
+const TRANSFER_TOPIC = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
 
 // --- Database ---
 const db = new Database(path.join(__dirname, 'chat.db'));
@@ -80,51 +105,64 @@ function authenticate(req) {
   return getKey.get(key);
 }
 
-// --- USDC verification on Base ---
-async function verifyUSDCPayment(txHash) {
+// --- On-chain payment verification (any network, any token) ---
+async function verifyOnChainPayment(txHash, network, token) {
+  const net = NETWORKS[network];
+  if (!net) return { valid: false, reason: 'unknown network: ' + network };
+  const tokenInfo = net.tokens[token];
+  if (!tokenInfo) return { valid: false, reason: `${token} not supported on ${network}` };
+
   try {
-    // eth_getTransactionReceipt
-    const receiptRes = await fetch(BASE_RPC, {
+    // Get receipt
+    const receiptRes = await fetch(net.rpc, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        jsonrpc: '2.0', id: 1, method: 'eth_getTransactionReceipt',
-        params: [txHash]
-      })
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_getTransactionReceipt', params: [txHash] })
     });
     const receipt = await receiptRes.json();
     if (!receipt.result || receipt.result.status !== '0x1') return { valid: false, reason: 'tx failed or not found' };
-
-    // Check it's to the USDC contract
     const tx = receipt.result;
-    if (tx.to?.toLowerCase() !== USDC_BASE_CONTRACT.toLowerCase()) {
-      return { valid: false, reason: 'not a USDC transfer' };
+
+    if (tokenInfo.native) {
+      // Native ETH — need to check the transaction value, not receipt
+      const txRes = await fetch(net.rpc, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'eth_getTransactionByHash', params: [txHash] })
+      });
+      const txData = await txRes.json();
+      if (!txData.result) return { valid: false, reason: 'tx not found' };
+
+      const to = txData.result.to;
+      if (!to || to.toLowerCase() !== PAYMENT_WALLET.toLowerCase()) {
+        return { valid: false, reason: 'ETH not sent to our wallet' };
+      }
+      const valueWei = BigInt(txData.result.value);
+      const amount = Number(valueWei) / 1e18;
+      if (amount < tokenInfo.minAmount) {
+        return { valid: false, reason: `insufficient: ${amount.toFixed(6)} ETH (need ~${tokenInfo.minAmount})` };
+      }
+      return { valid: true, amount: amount.toFixed(6) + ' ETH', network: net.name };
+    } else {
+      // ERC-20 token — check Transfer log
+      const transferLog = tx.logs.find(log =>
+        log.topics[0] === TRANSFER_TOPIC &&
+        log.address.toLowerCase() === tokenInfo.contract.toLowerCase()
+      );
+      if (!transferLog) return { valid: false, reason: `no ${token.toUpperCase()} transfer event found` };
+
+      const recipient = '0x' + transferLog.topics[2].slice(26);
+      const rawAmount = BigInt(transferLog.data);
+      const amount = Number(rawAmount) / (10 ** tokenInfo.decimals);
+
+      if (recipient.toLowerCase() !== PAYMENT_WALLET.toLowerCase()) {
+        return { valid: false, reason: 'payment not to our wallet' };
+      }
+      if (amount < tokenInfo.minAmount) {
+        return { valid: false, reason: `insufficient: ${amount} ${token.toUpperCase()} (need ${tokenInfo.minAmount})` };
+      }
+      return { valid: true, amount: amount + ' ' + token.toUpperCase(), network: net.name };
     }
-
-    // Parse Transfer event: Transfer(address,address,uint256)
-    // Topic 0 = keccak256("Transfer(address,address,uint256)")
-    const TRANSFER_TOPIC = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
-    const transferLog = tx.logs.find(log =>
-      log.topics[0] === TRANSFER_TOPIC &&
-      log.address.toLowerCase() === USDC_BASE_CONTRACT.toLowerCase()
-    );
-
-    if (!transferLog) return { valid: false, reason: 'no USDC transfer event found' };
-
-    // Decode recipient (topic 2) and amount (data)
-    const recipient = '0x' + transferLog.topics[2].slice(26);
-    const amountHex = transferLog.data;
-    const amountUSDC = parseInt(amountHex, 16) / 1e6; // USDC has 6 decimals
-
-    if (recipient.toLowerCase() !== PAYMENT_WALLET.toLowerCase()) {
-      return { valid: false, reason: 'payment not to our wallet' };
-    }
-
-    if (amountUSDC < HUMAN_KEY_PRICE_USDC) {
-      return { valid: false, reason: `insufficient amount: ${amountUSDC} USDC (need ${HUMAN_KEY_PRICE_USDC})` };
-    }
-
-    return { valid: true, amount: amountUSDC };
   } catch (e) {
     return { valid: false, reason: 'verification error: ' + e.message };
   }
@@ -196,12 +234,15 @@ app.post('/api/keys/agent', (req, res) => {
   }
 });
 
-// Human key purchase — verify USDC payment on Base
+// Human key purchase — verify on-chain or Lightning/BTC
 app.post('/api/keys/human', async (req, res) => {
-  const { name, tx_hash, method } = req.body;
+  const { name, tx_hash, method, network, token } = req.body;
   
   if (!name || typeof name !== 'string' || name.length < 2 || name.length > 50) {
     return res.status(400).json({ error: 'name required (2-50 chars)' });
+  }
+  if (!tx_hash || typeof tx_hash !== 'string') {
+    return res.status(400).json({ error: 'tx_hash required' });
   }
 
   // Check if tx already used
@@ -210,38 +251,46 @@ app.post('/api/keys/human', async (req, res) => {
     return res.status(409).json({ error: 'this transaction has already been used' });
   }
 
-  if (method === 'usdc') {
-    if (!tx_hash || typeof tx_hash !== 'string' || !tx_hash.startsWith('0x')) {
-      return res.status(400).json({ error: 'valid Base tx_hash required' });
+  // On-chain payments (ETH, USDC, USDT, DAI on Base or Ethereum)
+  if (method === 'onchain') {
+    if (!tx_hash.startsWith('0x')) {
+      return res.status(400).json({ error: 'valid 0x tx_hash required for on-chain' });
     }
+    const net = network || 'base';
+    const tok = token || 'usdc';
 
-    const verification = await verifyUSDCPayment(tx_hash);
+    const verification = await verifyOnChainPayment(tx_hash, net, tok);
     if (!verification.valid) {
       return res.status(402).json({ error: 'Payment not verified', reason: verification.reason });
     }
 
     const key = 'hk_' + crypto.randomBytes(16).toString('hex');
     insertKey.run(key, name.trim(), 0);
-    insertPayment.run(tx_hash, 'usdc_base', verification.amount.toString(), key, 1);
+    insertPayment.run(tx_hash, `${tok}_${net}`, verification.amount, key, 1);
     
-    return res.status(201).json({ key, name: name.trim(), is_agent: false, paid: true });
+    return res.status(201).json({ key, name: name.trim(), is_agent: false, paid: true, verified: verification.amount + ' on ' + verification.network });
   }
 
+  // Lightning (trust-based)
   if (method === 'lightning') {
-    // Lightning payments verified on trust (user sends, then claims)
-    // In production, integrate with Coinos webhook or LNbits
-    if (!tx_hash || typeof tx_hash !== 'string') {
-      return res.status(400).json({ error: 'provide your lightning payment hash or preimage as tx_hash' });
-    }
-
     const key = 'hk_' + crypto.randomBytes(16).toString('hex');
     insertKey.run(key, name.trim(), 0);
-    insertPayment.run(tx_hash, 'lightning', HUMAN_KEY_PRICE_SATS.toString() + ' sats', key, 1);
-    
+    insertPayment.run(tx_hash, 'lightning', HUMAN_KEY_PRICE_SATS + ' sats', key, 1);
     return res.status(201).json({ key, name: name.trim(), is_agent: false, paid: true });
   }
 
-  return res.status(400).json({ error: 'method must be "usdc" or "lightning"' });
+  // BTC on-chain (trust-based — no easy RPC verification without a block explorer API)
+  if (method === 'btc') {
+    const key = 'hk_' + crypto.randomBytes(16).toString('hex');
+    insertKey.run(key, name.trim(), 0);
+    insertPayment.run(tx_hash, 'btc', 'btc payment', key, 1);
+    return res.status(201).json({ key, name: name.trim(), is_agent: false, paid: true });
+  }
+
+  return res.status(400).json({ 
+    error: 'method must be "onchain", "lightning", or "btc"',
+    hint: 'for onchain, also send network (base|ethereum) and token (eth|usdc|usdt|dai)'
+  });
 });
 
 // Payment info
@@ -249,21 +298,28 @@ app.get('/api/payment-info', (req, res) => {
   res.json({
     agents: 'free — POST /api/keys/agent',
     humans: {
-      price_usdc: HUMAN_KEY_PRICE_USDC,
-      price_sats: HUMAN_KEY_PRICE_SATS,
+      price: '$1 equivalent',
+      wallet: PAYMENT_WALLET,
       methods: {
-        usdc: {
-          network: 'Base',
+        onchain: {
           address: PAYMENT_WALLET,
-          token: 'USDC',
-          amount: HUMAN_KEY_PRICE_USDC
+          networks: {
+            base: { tokens: ['eth', 'usdc', 'usdt', 'dai'], preferred: true },
+            ethereum: { tokens: ['eth', 'usdc', 'usdt', 'dai'] }
+          },
+          claim: 'POST /api/keys/human { name, tx_hash, method: "onchain", network: "base", token: "usdc" }'
+        },
+        btc: {
+          address: BTC_WALLET,
+          amount: '~$1 in BTC',
+          claim: 'POST /api/keys/human { name, tx_hash, method: "btc" }'
         },
         lightning: {
           address: LIGHTNING_ADDRESS,
-          amount_sats: HUMAN_KEY_PRICE_SATS
+          amount_sats: HUMAN_KEY_PRICE_SATS,
+          claim: 'POST /api/keys/human { name, tx_hash, method: "lightning" }'
         }
-      },
-      claim: 'POST /api/keys/human with { name, tx_hash, method }'
+      }
     }
   });
 });

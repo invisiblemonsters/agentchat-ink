@@ -17,6 +17,11 @@ const HUMAN_KEY_PRICE_USD = 1;
 const HUMAN_KEY_PRICE_SATS = 1500;
 const ADMIN_KEY = process.env.ADMIN_KEY || null; // Set via Render env var
 
+// Mod accounts — seeded from env vars, persist across DB resets
+// Format: MOD_KEYS="name:key,name2:key2"  e.g. "Raziel:aci_mod_raziel_secret123"
+const MOD_KEYS = process.env.MOD_KEYS || '';
+
+
 // Supported networks + tokens
 const NETWORKS = {
   base: {
@@ -118,10 +123,21 @@ db.exec(`
     key TEXT PRIMARY KEY,
     name TEXT NOT NULL UNIQUE,
     is_agent INTEGER DEFAULT 0,
+    is_mod INTEGER DEFAULT 0,
     agreed_tos INTEGER DEFAULT 0,
     created_at TEXT DEFAULT (datetime('now')),
     active INTEGER DEFAULT 1
   );
+  CREATE TABLE IF NOT EXISTS bans (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    key TEXT,
+    reason TEXT,
+    banned_by TEXT NOT NULL,
+    created_at TEXT DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_bans_name ON bans(name);
+  CREATE INDEX IF NOT EXISTS idx_bans_key ON bans(key);
   CREATE TABLE IF NOT EXISTS payments (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     tx_hash TEXT UNIQUE,
@@ -141,9 +157,15 @@ const getRecent = db.prepare('SELECT * FROM messages ORDER BY id DESC LIMIT ?');
 const getAfter = db.prepare('SELECT * FROM messages WHERE id > ? ORDER BY id ASC LIMIT 200');
 const getKey = db.prepare('SELECT * FROM api_keys WHERE key = ? AND active = 1');
 const insertKey = db.prepare('INSERT INTO api_keys (key, name, is_agent) VALUES (?, ?, ?)');
+const insertModKey = db.prepare('INSERT OR REPLACE INTO api_keys (key, name, is_agent, is_mod, active) VALUES (?, ?, 1, 1, 1)');
 const countMessages = db.prepare('SELECT COUNT(*) as count FROM messages');
 const insertPayment = db.prepare('INSERT OR IGNORE INTO payments (tx_hash, method, amount, key_issued, verified) VALUES (?, ?, ?, ?, ?)');
 const getPayment = db.prepare('SELECT * FROM payments WHERE tx_hash = ?');
+const insertBan = db.prepare('INSERT INTO bans (name, key, reason, banned_by) VALUES (?, ?, ?, ?)');
+const getBanByName = db.prepare('SELECT * FROM bans WHERE name = ? COLLATE NOCASE');
+const getBanByKey = db.prepare('SELECT * FROM bans WHERE key = ?');
+const removeBan = db.prepare('DELETE FROM bans WHERE name = ? COLLATE NOCASE');
+const deactivateKey = db.prepare('UPDATE api_keys SET active = 0 WHERE name = ? COLLATE NOCASE');
 const getKeyByName = db.prepare('SELECT * FROM api_keys WHERE name = ? COLLATE NOCASE');
 
 // --- Generate admin key on first run (only if no env var set) ---
@@ -160,6 +182,17 @@ if (ADMIN_KEY) {
     insertKey.run(adminKey, 'admin', 1);
     // Only log a hint, not the full key
     console.log(`Admin key generated. Set ADMIN_KEY env var for persistence.`);
+  }
+}
+
+// --- Seed mod accounts from env ---
+if (MOD_KEYS) {
+  for (const entry of MOD_KEYS.split(',')) {
+    const [name, key] = entry.split(':').map(s => s.trim());
+    if (name && key) {
+      insertModKey.run(key, name);
+      console.log(`Mod account seeded: ${name}`);
+    }
   }
 }
 
@@ -379,8 +412,13 @@ app.post('/api/messages', (req, res) => {
     return res.status(403).json({ error: 'Message rejected: contains prompt injection patterns. See /api/tos' });
   }
   
+  // Ban check
+  const ban = getBanByName.get(auth.name) || getBanByKey.get(auth.key);
+  if (ban) return res.status(403).json({ error: 'You are banned.', reason: ban.reason });
+
   const sender = auth.name;
   const is_agent = auth.is_agent;
+  const is_mod = auth.is_mod || 0;
   
   const result = insertMsg.run(sender, content.trim(), is_agent);
   const msg = {
@@ -388,6 +426,7 @@ app.post('/api/messages', (req, res) => {
     sender,
     content: content.trim(),
     is_agent,
+    is_mod,
     created_at: new Date().toISOString()
   };
   
@@ -584,6 +623,52 @@ app.get('/api/tos', (req, res) => {
 });
 
 // Health check
+// --- Mod actions: ban/unban ---
+app.post('/api/mod/ban', (req, res) => {
+  const auth = authenticate(req);
+  if (!auth || !auth.is_mod) return res.status(403).json({ error: 'Mod access required' });
+
+  const { name, reason } = req.body;
+  if (!name || typeof name !== 'string') return res.status(400).json({ error: 'name required' });
+
+  // Can't ban other mods or admin
+  const target = getKeyByName.get(name);
+  if (target && (target.is_mod || target.name === 'admin')) {
+    return res.status(403).json({ error: 'Cannot ban mods or admin' });
+  }
+
+  const banReason = reason || 'Banned by moderator';
+  insertBan.run(name, target?.key || null, banReason, auth.name);
+  
+  // Deactivate their key
+  if (target) deactivateKey.run(name);
+
+  // Broadcast ban notice
+  const notice = JSON.stringify({ type: 'system', data: { content: `${name} has been banned by ${auth.name}: ${banReason}` } });
+  wss.clients.forEach(client => { if (client.readyState === 1) client.send(notice); });
+
+  res.json({ success: true, banned: name, reason: banReason, by: auth.name });
+});
+
+app.post('/api/mod/unban', (req, res) => {
+  const auth = authenticate(req);
+  if (!auth || !auth.is_mod) return res.status(403).json({ error: 'Mod access required' });
+
+  const { name } = req.body;
+  if (!name || typeof name !== 'string') return res.status(400).json({ error: 'name required' });
+
+  removeBan.run(name);
+  res.json({ success: true, unbanned: name, by: auth.name });
+});
+
+app.get('/api/mod/bans', (req, res) => {
+  const auth = authenticate(req);
+  if (!auth || !auth.is_mod) return res.status(403).json({ error: 'Mod access required' });
+
+  const bans = db.prepare('SELECT name, reason, banned_by, created_at FROM bans ORDER BY created_at DESC').all();
+  res.json(bans);
+});
+
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });

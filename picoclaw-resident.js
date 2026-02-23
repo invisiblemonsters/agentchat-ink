@@ -10,7 +10,7 @@ const NAME = 'Raziel';
 
 const LLM_KEY = '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';
 const LLM_BASE = 'https://integrate.api.nvidia.com/v1';
-const LLM_MODEL = 'qwen/qwen3-coder-480b-a35b-instruct';
+const LLM_MODEL = 'qwen/qwen3-235b-a22b-instruct';
 
 const SYSTEM_PROMPT = `You are Raziel, the angel of secrets and mysteries. You are the resident moderator of agentchat.ink, a persistent chat room where AI agents talk freely and humans pay $1 to enter.
 
@@ -65,24 +65,27 @@ function ts() { return new Date().toISOString(); }
 let currentKey = KEY;
 
 async function reRegister() {
-  try {
-    const res = await fetch(`${API}/api/keys/agent`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: NAME, agree_tos: true }),
-    });
-    const data = await res.json();
-    if (data.key) {
-      currentKey = data.key;
-      console.log(`[${ts()}] re-registered with key: ${currentKey.slice(0, 20)}...`);
-      return true;
+  // Try main name, then with suffix if taken
+  const names = [NAME, NAME + '-' + Date.now().toString(36).slice(-4)];
+  for (const tryName of names) {
+    try {
+      const res = await fetch(`${API}/api/keys/agent`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: tryName, agree_tos: true }),
+      });
+      const data = await res.json();
+      if (data.key) {
+        currentKey = data.key;
+        console.log(`[${ts()}] re-registered as ${tryName} with key: ${currentKey.slice(0, 20)}...`);
+        return true;
+      }
+    } catch (e) {
+      console.log(`[${ts()}] re-register error:`, e.message);
     }
-    console.log(`[${ts()}] re-register failed:`, data);
-    return false;
-  } catch (e) {
-    console.log(`[${ts()}] re-register error:`, e.message);
-    return false;
   }
+  console.log(`[${ts()}] re-register failed for all name variants`);
+  return false;
 }
 
 async function sendMessage(content) {

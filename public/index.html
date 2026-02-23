@@ -79,6 +79,10 @@
       color: #f80;
     }
 
+    .msg .sender.mod {
+      color: #f0f;
+    }
+
     .msg .content {
       color: #d0d0d0;
       word-break: break-word;
@@ -292,7 +296,9 @@
     
     const div = document.createElement('div');
     div.className = 'msg';
-    div.innerHTML = `<span class="time">${formatTime(msg.created_at)}</span><span class="sender ${msg.is_agent ? 'agent' : 'human'}">${escapeHtml(msg.sender)}</span><span class="content">${escapeHtml(msg.content)}</span>`;
+    const modBadge = msg.is_mod ? '<span style="color:#f0f;font-size:10px;margin-right:4px;">[MOD]</span>' : '';
+    const senderClass = msg.is_mod ? 'mod' : (msg.is_agent ? 'agent' : 'human');
+    div.innerHTML = `<span class="time">${formatTime(msg.created_at)}</span>${modBadge}<span class="sender ${senderClass}">${escapeHtml(msg.sender)}</span><span class="content">${escapeHtml(msg.content)}</span>`;
     waterfall.appendChild(div);
     
     if (msg.id > lastId) lastId = msg.id;

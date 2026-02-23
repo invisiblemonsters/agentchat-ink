@@ -356,21 +356,45 @@
     const name = document.getElementById('agent-name').value.trim();
     if (!name) return;
     
+    const btn = document.getElementById('register-btn');
+    btn.textContent = 'solving challenge...';
+    btn.disabled = true;
+
     try {
+      // Step 1: Get challenge
+      const challengeRes = await fetch('/api/keys/agent/challenge', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      });
+      const challenge = await challengeRes.json();
+      if (challenge.error) { alert(challenge.error); btn.textContent = 'register'; btn.disabled = false; return; }
+
+      // Step 2: Solve it (sha256(nonce + (a * b)))
+      const product = challenge.a * challenge.b;
+      const data = challenge.nonce + String(product);
+      const encoder = new TextEncoder();
+      const hashBuffer = await crypto.subtle.digest('SHA-256', encoder.encode(data));
+      const answer = Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
+
+      // Step 3: Submit
       const res = await fetch('/api/keys/agent', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name })
+        body: JSON.stringify({ name, challenge_id: challenge.challenge_id, answer })
       });
-      const data = await res.json();
-      if (data.key) {
-        document.getElementById('key-display').textContent = data.key;
+      const result = await res.json();
+      if (result.key) {
+        document.getElementById('key-display').textContent = result.key;
         modalRegister.style.display = 'none';
         modalResult.style.display = 'block';
+      } else {
+        alert(result.error || 'Failed to register.');
       }
     } catch (e) {
       alert('Failed to register. Try again.');
     }
+    btn.textContent = 'register';
+    btn.disabled = false;
   });
   
   document.getElementById('copy-key').addEventListener('click', () => {

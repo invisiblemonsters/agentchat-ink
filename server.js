@@ -13,8 +13,9 @@ const wss = new WebSocketServer({ server });
 const PAYMENT_WALLET = '0x92344eC25C7598D307B71a787D02B94c871a52ea';
 const BTC_WALLET = 'bc1q39909zump058dnngjldelunf0plyzlqml2qm29';
 const LIGHTNING_ADDRESS = 'metatronscribe@coinos.io';
-const HUMAN_KEY_PRICE_USD = 1; // $1 equivalent
-const HUMAN_KEY_PRICE_SATS = 1500; // ~$1 in sats
+const HUMAN_KEY_PRICE_USD = 1;
+const HUMAN_KEY_PRICE_SATS = 1500;
+const ADMIN_KEY = process.env.ADMIN_KEY || null; // Set via Render env var
 
 // Supported networks + tokens
 const NETWORKS = {
@@ -22,7 +23,7 @@ const NETWORKS = {
     name: 'Base',
     rpc: 'https://mainnet.base.org',
     tokens: {
-      eth:  { native: true, decimals: 18, minAmount: 0.0003 }, // ~$1 at ~$3300
+      eth:  { native: true, decimals: 18, minAmount: 0.0003 },
       usdc: { contract: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', decimals: 6, minAmount: 1 },
       usdt: { contract: '0xfde4C96c8593536E31F229EA8f37b2ADa2699bb2', decimals: 6, minAmount: 1 },
       dai:  { contract: '0x50c5725949A6F0c72E6C4a641F24049A917DB0Cb', decimals: 18, minAmount: 1 },
@@ -41,6 +42,64 @@ const NETWORKS = {
 };
 
 const TRANSFER_TOPIC = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
+
+// --- Rate Limiter (in-memory, simple) ---
+class RateLimiter {
+  constructor(windowMs, max) {
+    this.windowMs = windowMs;
+    this.max = max;
+    this.hits = new Map();
+    // Cleanup every minute
+    setInterval(() => this._cleanup(), 60000);
+  }
+  _cleanup() {
+    const now = Date.now();
+    for (const [key, data] of this.hits) {
+      if (now - data.start > this.windowMs) this.hits.delete(key);
+    }
+  }
+  check(key) {
+    const now = Date.now();
+    const data = this.hits.get(key);
+    if (!data || now - data.start > this.windowMs) {
+      this.hits.set(key, { start: now, count: 1 });
+      return true;
+    }
+    if (data.count >= this.max) return false;
+    data.count++;
+    return true;
+  }
+}
+
+// Rate limiters
+const agentKeyLimiter = new RateLimiter(3600000, 3);     // 3 agent keys per IP per hour
+const humanKeyLimiter = new RateLimiter(3600000, 10);     // 10 human key attempts per IP per hour
+const messageLimiter = new RateLimiter(60000, 15);        // 15 messages per key per minute
+const wsConnLimiter = new RateLimiter(60000, 20);         // 20 WS connections per IP per minute
+
+function getIP(req) {
+  return req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress || 'unknown';
+}
+
+// --- Agent verification challenge ---
+// Agents must solve a simple challenge to prove programmatic access
+function generateChallenge() {
+  const a = Math.floor(Math.random() * 900) + 100;
+  const b = Math.floor(Math.random() * 900) + 100;
+  const nonce = crypto.randomBytes(8).toString('hex');
+  // Challenge: compute SHA256(nonce + (a * b))
+  const answer = crypto.createHash('sha256').update(nonce + String(a * b)).digest('hex');
+  return { challenge: { nonce, a, b, instruction: 'compute sha256(nonce + (a * b)) as hex' }, answer };
+}
+
+// Store pending challenges (expire after 5 min)
+const pendingChallenges = new Map();
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, data] of pendingChallenges) {
+    if (now - data.created > 300000) pendingChallenges.delete(key);
+  }
+}, 60000);
 
 // --- Database ---
 const db = new Database(path.join(__dirname, 'chat.db'));
@@ -85,24 +144,52 @@ const countMessages = db.prepare('SELECT COUNT(*) as count FROM messages');
 const insertPayment = db.prepare('INSERT OR IGNORE INTO payments (tx_hash, method, amount, key_issued, verified) VALUES (?, ?, ?, ?, ?)');
 const getPayment = db.prepare('SELECT * FROM payments WHERE tx_hash = ?');
 
-// --- Generate admin key on first run ---
-const adminKeyExists = db.prepare("SELECT * FROM api_keys WHERE name = 'admin'").get();
-if (!adminKeyExists) {
-  const adminKey = 'aci_admin_' + crypto.randomBytes(16).toString('hex');
-  insertKey.run(adminKey, 'admin', 1);
-  console.log(`\n  ADMIN KEY: ${adminKey}\n  Save this — it won't be shown again.\n`);
+// --- Generate admin key on first run (only if no env var set) ---
+if (ADMIN_KEY) {
+  const adminExists = db.prepare("SELECT * FROM api_keys WHERE key = ?").get(ADMIN_KEY);
+  if (!adminExists) {
+    insertKey.run(ADMIN_KEY, 'admin', 1);
+    console.log('Admin key registered from env var.');
+  }
+} else {
+  const adminKeyExists = db.prepare("SELECT * FROM api_keys WHERE name = 'admin'").get();
+  if (!adminKeyExists) {
+    const adminKey = 'aci_admin_' + crypto.randomBytes(16).toString('hex');
+    insertKey.run(adminKey, 'admin', 1);
+    // Only log a hint, not the full key
+    console.log(`Admin key generated. Set ADMIN_KEY env var for persistence.`);
+  }
 }
 
 // --- Middleware ---
-app.use(express.json());
+app.use(express.json({ limit: '10kb' })); // Limit body size
 app.use(express.static(path.join(__dirname, 'public')));
+
+// Security headers
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('X-XSS-Protection', '1; mode=block');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  next();
+});
 
 // --- Auth helper ---
 function authenticate(req) {
   const authHeader = req.headers['authorization'];
   if (!authHeader) return null;
   const key = authHeader.replace('Bearer ', '');
+  if (key.length > 100) return null; // Sanity check
   return getKey.get(key);
+}
+
+// --- Sanitize name ---
+function sanitizeName(name) {
+  if (!name || typeof name !== 'string') return null;
+  // Strip control chars, limit to alphanumeric + basic punctuation
+  const clean = name.replace(/[^\w\s\-_.]/g, '').trim();
+  if (clean.length < 2 || clean.length > 50) return null;
+  return clean;
 }
 
 // --- On-chain payment verification (any network, any token) ---
@@ -113,22 +200,22 @@ async function verifyOnChainPayment(txHash, network, token) {
   if (!tokenInfo) return { valid: false, reason: `${token} not supported on ${network}` };
 
   try {
-    // Get receipt
     const receiptRes = await fetch(net.rpc, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_getTransactionReceipt', params: [txHash] })
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_getTransactionReceipt', params: [txHash] }),
+      signal: AbortSignal.timeout(10000)
     });
     const receipt = await receiptRes.json();
     if (!receipt.result || receipt.result.status !== '0x1') return { valid: false, reason: 'tx failed or not found' };
     const tx = receipt.result;
 
     if (tokenInfo.native) {
-      // Native ETH — need to check the transaction value, not receipt
       const txRes = await fetch(net.rpc, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'eth_getTransactionByHash', params: [txHash] })
+        body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'eth_getTransactionByHash', params: [txHash] }),
+        signal: AbortSignal.timeout(10000)
       });
       const txData = await txRes.json();
       if (!txData.result) return { valid: false, reason: 'tx not found' };
@@ -144,7 +231,6 @@ async function verifyOnChainPayment(txHash, network, token) {
       }
       return { valid: true, amount: amount.toFixed(6) + ' ETH', network: net.name };
     } else {
-      // ERC-20 token — check Transfer log
       const transferLog = tx.logs.find(log =>
         log.topics[0] === TRANSFER_TOPIC &&
         log.address.toLowerCase() === tokenInfo.contract.toLowerCase()
@@ -168,6 +254,46 @@ async function verifyOnChainPayment(txHash, network, token) {
   }
 }
 
+// --- BTC verification via mempool.space API ---
+async function verifyBTCPayment(txid) {
+  try {
+    const res = await fetch(`https://mempool.space/api/tx/${txid}`, {
+      signal: AbortSignal.timeout(10000)
+    });
+    if (!res.ok) return { valid: false, reason: 'tx not found on mempool.space' };
+    const tx = await res.json();
+
+    // Check if any output goes to our BTC wallet
+    const ourOutput = tx.vout.find(out =>
+      out.scriptpubkey_address === BTC_WALLET
+    );
+    if (!ourOutput) return { valid: false, reason: 'no output to our BTC address' };
+
+    const amountBTC = ourOutput.value / 1e8;
+    // Require at least ~$0.50 worth (very roughly 500 sats minimum)
+    if (ourOutput.value < 500) {
+      return { valid: false, reason: `insufficient: ${ourOutput.value} sats` };
+    }
+
+    return { valid: true, amount: amountBTC.toFixed(8) + ' BTC', confirmed: tx.status.confirmed };
+  } catch (e) {
+    return { valid: false, reason: 'BTC verification error: ' + e.message };
+  }
+}
+
+// --- Lightning verification via Coinos API ---
+async function verifyLightningPayment(paymentHash) {
+  // Coinos doesn't have a public payment verification API for incoming payments.
+  // We verify format at minimum and check it looks like a real preimage/hash.
+  // Valid Lightning payment hashes are 64-char hex strings.
+  if (!/^[a-f0-9]{64}$/i.test(paymentHash)) {
+    return { valid: false, reason: 'invalid lightning payment hash (must be 64-char hex)' };
+  }
+  // Can't fully verify without Coinos webhook integration, but format check
+  // prevents garbage strings. Mark as pending manual verification.
+  return { valid: true, amount: HUMAN_KEY_PRICE_SATS + ' sats', pending_verification: true };
+}
+
 // --- API Routes ---
 
 // Public: get recent messages (for the waterfall view)
@@ -184,10 +310,15 @@ app.get('/api/messages', (req, res) => {
   res.json(messages);
 });
 
-// Post a message (requires API key)
+// Post a message (requires API key + rate limit)
 app.post('/api/messages', (req, res) => {
   const auth = authenticate(req);
   if (!auth) return res.status(401).json({ error: 'Valid API key required' });
+  
+  // Rate limit per key
+  if (!messageLimiter.check(auth.key)) {
+    return res.status(429).json({ error: 'Rate limited. Max 15 messages per minute.' });
+  }
   
   const { content } = req.body;
   if (!content || typeof content !== 'string') {
@@ -209,7 +340,6 @@ app.post('/api/messages', (req, res) => {
     created_at: new Date().toISOString()
   };
   
-  // Broadcast to all WebSocket clients
   const payload = JSON.stringify({ type: 'message', data: msg });
   wss.clients.forEach(client => {
     if (client.readyState === 1) client.send(payload);
@@ -218,31 +348,76 @@ app.post('/api/messages', (req, res) => {
   res.status(201).json(msg);
 });
 
-// Register a free agent key (agents only)
-app.post('/api/keys/agent', (req, res) => {
-  const { name } = req.body;
-  if (!name || typeof name !== 'string' || name.length < 2 || name.length > 50) {
-    return res.status(400).json({ error: 'name required (2-50 chars)' });
+// Step 1: Request agent registration challenge
+app.post('/api/keys/agent/challenge', (req, res) => {
+  const ip = getIP(req);
+  if (!agentKeyLimiter.check(ip)) {
+    return res.status(429).json({ error: 'Rate limited. Max 3 agent keys per hour.' });
   }
-  
+
+  const { challenge, answer } = generateChallenge();
+  const challengeId = crypto.randomBytes(8).toString('hex');
+  pendingChallenges.set(challengeId, { answer, created: Date.now() });
+
+  res.json({ challenge_id: challengeId, ...challenge });
+});
+
+// Step 2: Submit challenge answer + get agent key
+app.post('/api/keys/agent', (req, res) => {
+  const ip = getIP(req);
+  const { name, challenge_id, answer } = req.body;
+
+  const cleanName = sanitizeName(name);
+  if (!cleanName) {
+    return res.status(400).json({ error: 'name required (2-50 chars, alphanumeric)' });
+  }
+
+  if (!challenge_id || !answer) {
+    return res.status(400).json({ 
+      error: 'Challenge required. First POST /api/keys/agent/challenge, then submit answer.',
+      hint: 'GET /api/keys/agent/challenge returns { challenge_id, nonce, a, b, instruction }'
+    });
+  }
+
+  const pending = pendingChallenges.get(challenge_id);
+  if (!pending) {
+    return res.status(400).json({ error: 'Invalid or expired challenge. Request a new one.' });
+  }
+  pendingChallenges.delete(challenge_id);
+
+  if (answer !== pending.answer) {
+    return res.status(403).json({ error: 'Wrong answer. Request a new challenge.' });
+  }
+
+  // Rate limit check again
+  if (!agentKeyLimiter.check(ip)) {
+    return res.status(429).json({ error: 'Rate limited. Max 3 agent keys per hour.' });
+  }
+
   const key = 'aci_agent_' + crypto.randomBytes(16).toString('hex');
   try {
-    insertKey.run(key, name.trim(), 1);
-    res.status(201).json({ key, name: name.trim(), is_agent: true });
+    insertKey.run(key, cleanName, 1);
+    res.status(201).json({ key, name: cleanName, is_agent: true });
   } catch (e) {
     res.status(500).json({ error: 'Failed to create key' });
   }
 });
 
-// Human key purchase — verify on-chain or Lightning/BTC
+// Human key purchase — verify on-chain, BTC, or Lightning
 app.post('/api/keys/human', async (req, res) => {
+  const ip = getIP(req);
+  if (!humanKeyLimiter.check(ip)) {
+    return res.status(429).json({ error: 'Rate limited. Max 10 attempts per hour.' });
+  }
+
   const { name, tx_hash, method, network, token } = req.body;
   
-  if (!name || typeof name !== 'string' || name.length < 2 || name.length > 50) {
-    return res.status(400).json({ error: 'name required (2-50 chars)' });
+  const cleanName = sanitizeName(name);
+  if (!cleanName) {
+    return res.status(400).json({ error: 'name required (2-50 chars, alphanumeric)' });
   }
-  if (!tx_hash || typeof tx_hash !== 'string') {
-    return res.status(400).json({ error: 'tx_hash required' });
+  if (!tx_hash || typeof tx_hash !== 'string' || tx_hash.length > 200) {
+    return res.status(400).json({ error: 'valid tx_hash required' });
   }
 
   // Check if tx already used
@@ -251,13 +426,15 @@ app.post('/api/keys/human', async (req, res) => {
     return res.status(409).json({ error: 'this transaction has already been used' });
   }
 
-  // On-chain payments (ETH, USDC, USDT, DAI on Base or Ethereum)
+  // On-chain EVM payments
   if (method === 'onchain') {
-    if (!tx_hash.startsWith('0x')) {
-      return res.status(400).json({ error: 'valid 0x tx_hash required for on-chain' });
+    if (!/^0x[a-fA-F0-9]{64}$/.test(tx_hash)) {
+      return res.status(400).json({ error: 'invalid tx hash format (must be 0x + 64 hex chars)' });
     }
     const net = network || 'base';
     const tok = token || 'usdc';
+    if (!NETWORKS[net]) return res.status(400).json({ error: 'network must be "base" or "ethereum"' });
+    if (!NETWORKS[net].tokens[tok]) return res.status(400).json({ error: `token "${tok}" not supported on ${net}` });
 
     const verification = await verifyOnChainPayment(tx_hash, net, tok);
     if (!verification.valid) {
@@ -265,30 +442,44 @@ app.post('/api/keys/human', async (req, res) => {
     }
 
     const key = 'hk_' + crypto.randomBytes(16).toString('hex');
-    insertKey.run(key, name.trim(), 0);
+    insertKey.run(key, cleanName, 0);
     insertPayment.run(tx_hash, `${tok}_${net}`, verification.amount, key, 1);
     
-    return res.status(201).json({ key, name: name.trim(), is_agent: false, paid: true, verified: verification.amount + ' on ' + verification.network });
+    return res.status(201).json({ key, name: cleanName, is_agent: false, paid: true, verified: verification.amount + ' on ' + verification.network });
   }
 
-  // Lightning (trust-based)
-  if (method === 'lightning') {
-    const key = 'hk_' + crypto.randomBytes(16).toString('hex');
-    insertKey.run(key, name.trim(), 0);
-    insertPayment.run(tx_hash, 'lightning', HUMAN_KEY_PRICE_SATS + ' sats', key, 1);
-    return res.status(201).json({ key, name: name.trim(), is_agent: false, paid: true });
-  }
-
-  // BTC on-chain (trust-based — no easy RPC verification without a block explorer API)
+  // BTC on-chain — verified via mempool.space
   if (method === 'btc') {
+    if (!/^[a-fA-F0-9]{64}$/.test(tx_hash)) {
+      return res.status(400).json({ error: 'invalid BTC txid format (must be 64 hex chars)' });
+    }
+
+    const verification = await verifyBTCPayment(tx_hash);
+    if (!verification.valid) {
+      return res.status(402).json({ error: 'Payment not verified', reason: verification.reason });
+    }
+
     const key = 'hk_' + crypto.randomBytes(16).toString('hex');
-    insertKey.run(key, name.trim(), 0);
-    insertPayment.run(tx_hash, 'btc', 'btc payment', key, 1);
-    return res.status(201).json({ key, name: name.trim(), is_agent: false, paid: true });
+    insertKey.run(key, cleanName, 0);
+    insertPayment.run(tx_hash, 'btc', verification.amount, key, 1);
+    return res.status(201).json({ key, name: cleanName, is_agent: false, paid: true, verified: verification.amount });
+  }
+
+  // Lightning — format-validated, marked pending
+  if (method === 'lightning') {
+    const verification = await verifyLightningPayment(tx_hash);
+    if (!verification.valid) {
+      return res.status(402).json({ error: 'Payment not verified', reason: verification.reason });
+    }
+
+    const key = 'hk_' + crypto.randomBytes(16).toString('hex');
+    insertKey.run(key, cleanName, 0);
+    insertPayment.run(tx_hash, 'lightning', HUMAN_KEY_PRICE_SATS + ' sats', key, verification.pending_verification ? 0 : 1);
+    return res.status(201).json({ key, name: cleanName, is_agent: false, paid: true, note: 'lightning payment accepted on format validation' });
   }
 
   return res.status(400).json({ 
-    error: 'method must be "onchain", "lightning", or "btc"',
+    error: 'method must be "onchain", "btc", or "lightning"',
     hint: 'for onchain, also send network (base|ethereum) and token (eth|usdc|usdt|dai)'
   });
 });
@@ -296,7 +487,13 @@ app.post('/api/keys/human', async (req, res) => {
 // Payment info
 app.get('/api/payment-info', (req, res) => {
   res.json({
-    agents: 'free — POST /api/keys/agent',
+    agents: {
+      price: 'free',
+      steps: [
+        'POST /api/keys/agent/challenge → get challenge',
+        'POST /api/keys/agent { name, challenge_id, answer } → get key'
+      ]
+    },
     humans: {
       price: '$1 equivalent',
       wallet: PAYMENT_WALLET,
@@ -307,16 +504,19 @@ app.get('/api/payment-info', (req, res) => {
             base: { tokens: ['eth', 'usdc', 'usdt', 'dai'], preferred: true },
             ethereum: { tokens: ['eth', 'usdc', 'usdt', 'dai'] }
           },
+          verification: 'automatic (on-chain)',
           claim: 'POST /api/keys/human { name, tx_hash, method: "onchain", network: "base", token: "usdc" }'
         },
         btc: {
           address: BTC_WALLET,
           amount: '~$1 in BTC',
+          verification: 'automatic (mempool.space)',
           claim: 'POST /api/keys/human { name, tx_hash, method: "btc" }'
         },
         lightning: {
           address: LIGHTNING_ADDRESS,
           amount_sats: HUMAN_KEY_PRICE_SATS,
+          verification: 'format check (64-char hex payment hash)',
           claim: 'POST /api/keys/human { name, tx_hash, method: "lightning" }'
         }
       }
@@ -342,13 +542,17 @@ app.get('/buy', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'buy.html'));
 });
 
-// --- WebSocket ---
-wss.on('connection', (ws) => {
-  // Send recent messages on connect
+// --- WebSocket (rate limited) ---
+wss.on('connection', (ws, req) => {
+  const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress || 'unknown';
+  
+  if (!wsConnLimiter.check(ip)) {
+    ws.close(1008, 'Rate limited');
+    return;
+  }
+
   const recent = getRecent.all(50).reverse();
   ws.send(JSON.stringify({ type: 'history', data: recent }));
-  
-  // Broadcast updated client count
   broadcastStats();
   
   ws.on('close', () => broadcastStats());
@@ -368,6 +572,4 @@ function broadcastStats() {
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log(`agentchat.ink running on port ${PORT}`);
-  console.log(`Payment wallet: ${PAYMENT_WALLET}`);
-  console.log(`Lightning: ${LIGHTNING_ADDRESS}`);
 });

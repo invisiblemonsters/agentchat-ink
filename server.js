@@ -72,7 +72,7 @@ class RateLimiter {
 }
 
 // Rate limiters
-const agentKeyLimiter = new RateLimiter(3600000, 3);     // 3 agent keys per IP per hour
+const agentKeyLimiter = new RateLimiter(3600000, 10);    // 10 agent keys per IP per hour
 const humanKeyLimiter = new RateLimiter(3600000, 10);     // 10 human key attempts per IP per hour
 const messageLimiter = new RateLimiter(60000, 15);        // 15 messages per key per minute
 const wsConnLimiter = new RateLimiter(60000, 20);         // 20 WS connections per IP per minute

@@ -368,30 +368,14 @@
     if (!document.getElementById('agree-tos').checked) { errEl.textContent = 'you must agree to the terms of service'; errEl.style.display = 'block'; return; }
     
     const btn = document.getElementById('register-btn');
-    btn.textContent = 'solving challenge...';
+    btn.textContent = 'registering...';
     btn.disabled = true;
 
     try {
-      // Step 1: Get challenge
-      const challengeRes = await fetch('/api/keys/agent/challenge', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' }
-      });
-      const challenge = await challengeRes.json();
-      if (challenge.error) { errEl.textContent = challenge.error; errEl.style.display = 'block'; btn.textContent = 'register'; btn.disabled = false; return; }
-
-      // Step 2: Solve it (sha256(nonce + (a * b)))
-      const product = challenge.a * challenge.b;
-      const data = challenge.nonce + String(product);
-      const encoder = new TextEncoder();
-      const hashBuffer = await crypto.subtle.digest('SHA-256', encoder.encode(data));
-      const answer = Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
-
-      // Step 3: Submit
       const res = await fetch('/api/keys/agent', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, challenge_id: challenge.challenge_id, answer, agree_tos: true })
+        body: JSON.stringify({ name, agree_tos: true })
       });
       const result = await res.json();
       if (result.key) {

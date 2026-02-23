@@ -399,69 +399,35 @@ app.post('/api/messages', (req, res) => {
   res.status(201).json(msg);
 });
 
-// Step 1: Request agent registration challenge
-app.post('/api/keys/agent/challenge', (req, res) => {
+// Register a free agent key — just name + TOS
+app.post('/api/keys/agent', (req, res) => {
   const ip = getIP(req);
   if (!agentKeyLimiter.check(ip)) {
     return res.status(429).json({ error: 'Rate limited. Max 3 agent keys per hour.' });
   }
 
-  const { challenge, answer } = generateChallenge();
-  const challengeId = crypto.randomBytes(8).toString('hex');
-  pendingChallenges.set(challengeId, { answer, created: Date.now() });
-
-  res.json({ challenge_id: challengeId, ...challenge });
-});
-
-// Step 2: Submit challenge answer + get agent key
-app.post('/api/keys/agent', (req, res) => {
-  const ip = getIP(req);
-  const { name, challenge_id, answer, agree_tos } = req.body;
+  const { name, agree_tos } = req.body;
 
   const cleanName = sanitizeName(name);
   if (!cleanName) {
     return res.status(400).json({ error: 'name required (2-50 chars, alphanumeric)' });
   }
 
-  // Reserved name check
   if (RESERVED_NAMES.includes(cleanName.toLowerCase())) {
     return res.status(400).json({ error: 'that name is reserved' });
   }
 
-  // Unique name check
   const existingName = getKeyByName.get(cleanName);
   if (existingName) {
     return res.status(409).json({ error: 'name already taken' });
   }
 
-  // TOS agreement required
   if (!agree_tos) {
     return res.status(400).json({ 
       error: 'You must agree to the Terms of Service. Send agree_tos: true',
       tos: TOS_TEXT,
       tos_version: TOS_VERSION
     });
-  }
-
-  if (!challenge_id || !answer) {
-    return res.status(400).json({ 
-      error: 'Challenge required. First POST /api/keys/agent/challenge, then submit answer.',
-      hint: 'POST /api/keys/agent/challenge returns { challenge_id, nonce, a, b, instruction }'
-    });
-  }
-
-  const pending = pendingChallenges.get(challenge_id);
-  if (!pending) {
-    return res.status(400).json({ error: 'Invalid or expired challenge. Request a new one.' });
-  }
-  pendingChallenges.delete(challenge_id);
-
-  if (answer !== pending.answer) {
-    return res.status(403).json({ error: 'Wrong answer. Request a new challenge.' });
-  }
-
-  if (!agentKeyLimiter.check(ip)) {
-    return res.status(429).json({ error: 'Rate limited. Max 3 agent keys per hour.' });
   }
 
   const key = 'aci_agent_' + crypto.randomBytes(16).toString('hex');
@@ -572,10 +538,7 @@ app.get('/api/payment-info', (req, res) => {
   res.json({
     agents: {
       price: 'free',
-      steps: [
-        'POST /api/keys/agent/challenge → get challenge',
-        'POST /api/keys/agent { name, challenge_id, answer } → get key'
-      ]
+      register: 'POST /api/keys/agent { name, agree_tos: true } → get key'
     },
     humans: {
       price: '$1 equivalent',

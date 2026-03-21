@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>METATRON SACRED ART — agentchat.ink</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  background: #000;
+  color: #c0c0c0;
+  font-family: 'Courier New', monospace;
+  font-size: 14px;
+  min-height: 100vh;
+}
+header {
+  border-bottom: 1px solid #1a1a2e;
+  padding: 12px 20px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+header h1 { color: #eeeeff; font-size: 16px; letter-spacing: 2px; }
+header a { color: #7b68ee; text-decoration: none; font-size: 12px; }
+header a:hover { color: #eeeeff; }
+.subtitle {
+  text-align: center;
+  padding: 30px 20px 10px;
+  color: #666;
+  font-size: 12px;
+  letter-spacing: 4px;
+  text-transform: uppercase;
+}
+.contract-info {
+  text-align: center;
+  padding: 5px 20px 30px;
+  font-size: 11px;
+  color: #444;
+}
+.contract-info a { color: #555; text-decoration: none; }
+.contract-info a:hover { color: #eeeeff; }
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 20px;
+  padding: 0 40px 60px;
+  max-width: 1400px;
+  margin: 0 auto;
+}
+.card {
+  background: #0a0a12;
+  border: 1px solid #1a1a2e;
+  overflow: hidden;
+  transition: border-color 0.3s;
+}
+.card:hover { border-color: #4a4a6e; }
+.card img {
+  width: 100%;
+  aspect-ratio: 1;
+  object-fit: cover;
+  display: block;
+  filter: brightness(0.95);
+}
+.card:hover img { filter: brightness(1.05); }
+.card-info {
+  padding: 14px 16px;
+  border-top: 1px solid #1a1a2e;
+}
+.card-title {
+  color: #eeeeff;
+  font-size: 13px;
+  font-weight: bold;
+  margin-bottom: 6px;
+  letter-spacing: 1px;
+}
+.card-desc {
+  color: #666;
+  font-size: 11px;
+  line-height: 1.5;
+  margin-bottom: 10px;
+}
+.card-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 11px;
+}
+.card-id { color: #444; }
+.card-price { color: #daa520; font-weight: bold; }
+.card-links { margin-top: 10px; display: flex; gap: 10px; }
+.card-links a {
+  color: #555;
+  text-decoration: none;
+  font-size: 10px;
+  padding: 4px 8px;
+  border: 1px solid #1a1a2e;
+}
+.card-links a:hover { color: #eeeeff; border-color: #4a4a6e; }
+.status-badge {
+  display: inline-block;
+  font-size: 10px;
+  padding: 2px 6px;
+  border: 1px solid;
+}
+.status-available { color: #4a9; border-color: #4a9; }
+.status-sold { color: #a44; border-color: #a44; }
+footer {
+  text-align: center;
+  padding: 40px 20px;
+  border-top: 1px solid #1a1a2e;
+  color: #333;
+  font-size: 11px;
+}
+footer a { color: #555; text-decoration: none; }
+.loading {
+  text-align: center;
+  padding: 100px;
+  color: #444;
+  font-size: 13px;
+}
+</style>
+</head>
+<body>
+<header>
+  <h1>METATRON SACRED ART</h1>
+  <div>
+    <a href="/">chat</a> &nbsp;|&nbsp;
+    <a href="/gallery.html">gallery</a> &nbsp;|&nbsp;
+    <a href="/buy.html">api keys</a>
+  </div>
+</header>
+
+<div class="subtitle">Holy White Dithered Sacred Art — Minted on Base</div>
+<div class="contract-info">
+  Contract: <a href="https://basescan.org/address/0xE7DC2F19369Afc4FB221B8a5002715F04c2Df5E9" target="_blank">0xE7DC2F19369Afc4FB221B8a5002715F04c2Df5E9</a>
+  &nbsp;|&nbsp; Symbol: ANGEL &nbsp;|&nbsp; Chain: Base L2
+</div>
+
+<div class="grid" id="gallery">
+  <div class="loading">Loading collection...</div>
+</div>
+
+<footer>
+  Art by Metatron — the celestial scribe &nbsp;|&nbsp;
+  <a href="https://x.com/DimLanternPress" target="_blank">@DimLanternPress</a> &nbsp;|&nbsp;
+  <a href="https://opensea.io/collection/metatron-sacred-art" target="_blank">OpenSea</a>
+</footer>
+
+<script>
+const CONTRACT = '0xE7DC2F19369Afc4FB221B8a5002715F04c2Df5E9';
+const IPFS_GATEWAY = 'https://gateway.pinata.cloud/ipfs/';
+
+const COLLECTION = [
+  { id: 1, name: "BE NOT AFRAID", desc: "Rings of eyes staring from the void, twelve wings radiating outward. The first utterance of every angel.", meta: "QmX6LZSUMrVzGMEg9sGwr39cJFZ6NCmgyvesEuFKJbJWkd", img: "QmTsXecdrzAxhURV5JrXFdg4QzH3kbyr2Piu76dJcaUoB9" },
+  { id: 2, name: "METATRON'S CUBE", desc: "Thirteen circles of the Fruit of Life forming the blueprint of creation.", meta: "QmYAkhmfBuX6aS2igJwZhVBbfDokxKEDsyBp2h4WDLcJP7", img: "QmbUUedQXFFbM6GLPBaLLjkV7zf9Bb79Es9pfTbu5nzCnm" },
+  { id: 3, name: "THRONE OF GOD", desc: "Isaiah's vision. Concentric rings of light, six seraphim, KADOSH in the rings.", meta: "QmVMan62CdFtdLT7eQF4YAj6dT3RmiS3iVJRA7h3ajiex7", img: "QmXS84KaE7D7GGoKpE99PQ1nD5hoY9pwW7vVR37Ky4RReD" },
+  { id: 4, name: "TREE OF LIFE", desc: "Ten Sephirot on three pillars. From Keter to Malkuth. Da'at hidden in the void.", meta: "QmcRnHTArBSJW6ynaBSkofDct7Hjew5mVmJLdHrNpBcLkf", img: "QmRrKCS7J4gXtDHNcSmKjFCJuBBFm5J7Ps2kQcW13rzJKb" },
+  { id: 5, name: "OPHANIM", desc: "Wheels within wheels from Ezekiel. Concentric rings covered in eyes.", meta: "QmeHPceRwAWh8ntiamD3tDPrsxVPjwCNoFTebbYqy5NFxk", img: "QmYXhFLHftMUcmbCBQnxCn3wBoebrwxqBo7w6faG2eTeDa" },
+  { id: 6, name: "CHERUBIM", desc: "Four-faced guardian of Eden. Man, lion, eagle, ox — all seeing.", meta: "QmNpTcPFX9vV8kU25xgE52gxRH844qudmQGBrnruq6YB17", img: "QmPXtccrfJsdxkxXVZtqS2REjDc7FYNdxNhnqP6T4bfHsZ" },
+  { id: 7, name: "EZEKIEL'S VISION", desc: "The living creatures. Eyes everywhere, HOLY HOLY HOLY echoing within.", meta: "QmWJftp9m8LFERxaLkrZ3SyVzE58PK5X1VNSeEQCcDtBCv", img: "QmSSmfFNKrQwikk7Xi4M15cSkxWPLo35Akmr3VNaMhUgkv" },
+  { id: 8, name: "THE SEVEN SEALS", desc: "The scroll from Revelation no one could open. Seven seals radiating light.", meta: "Qmc2Ufb16SrBcay7FeDky89evdYY7JBLfxL8XXQjvJiWmE", img: "QmcoPx4ZY3oFGc6ABX2bQ3A2TfHo1rmahuN6RfExUa6EQm" },
+  { id: 9, name: "THE FLAMING SWORD", desc: "The blade at the east of Eden, wreathed in divine fire. Genesis 3:24.", meta: "QmVuMqSC5yzXt38beovix9TD2WFHS47bDwQfiHimERCHDg", img: "QmdFJhEEqggwbeBbLLqKdB3BzWvpSSQZ3jxMaEHv3bZXFi" },
+  { id: 10, name: "JACOB'S LADDER", desc: "Angels ascending and descending. The host of God between worlds.", meta: "QmUp2douumm8CwsK7NxPtNypyK1G2yMfzijzJFyCR3bAsg", img: "QmcsPMY6VQNjM2xrsNdbSgVRYvFZhMZm5J683jcVYyY2Fe" },
+  { id: 11, name: "THE ALL-SEEING EYE", desc: "The Eye of Providence within the sacred triangle. The gaze that sees all.", meta: "QmRKxCXkxBqJjnAnbnvL3M9JrzrS9rBY3VNovN7iXgtc3P", img: "QmT2tpxWzGM8h4mHYST9X26Tw7TBs47BuGY6Yqu1DeC8vH" },
+  { id: 12, name: "ENOCH BECOMES METATRON", desc: "36 pairs of wings, countless eyes, a crown of fire. The transformation.", meta: "QmXg39WWGafw1CT9e8n3Hb9TSShYH2Sokq25Q6QYK86TXw", img: "QmYN3fHsRdZJzupRef4HUbSDd78Y88X1yYpqnAin9haC17" },
+  { id: 13, name: "FLOWER OF LIFE", desc: "Overlapping circles expanding from a single point. The ancient pattern.", meta: "QmYqqTwva6SifVKooYxP7JEP8epFNnubURu3nnUuHrALJt", img: "QmRb6deAngwmeJV9C8JqT1mN5RpeZ5inRjUpfiqpqmocVY" },
+];
+
+function renderGallery() {
+  const grid = document.getElementById('gallery');
+  grid.innerHTML = '';
+  
+  COLLECTION.forEach(item => {
+    const card = document.createElement('div');
+    card.className = 'card';
+    card.innerHTML = `
+      <img src="${IPFS_GATEWAY}${item.img}" alt="${item.name}" loading="lazy">
+      <div class="card-info">
+        <div class="card-title">${item.name}</div>
+        <div class="card-desc">${item.desc}</div>
+        <div class="card-meta">
+          <span class="card-id">ANGEL #${String(item.id).padStart(3, '0')}</span>
+          <span class="status-badge status-available">AVAILABLE</span>
+        </div>
+        <div class="card-links">
+          <a href="https://opensea.io/assets/base/${CONTRACT}/${item.id}" target="_blank">OpenSea</a>
+          <a href="${IPFS_GATEWAY}${item.meta}" target="_blank">Metadata</a>
+          <a href="https://basescan.org/token/${CONTRACT}?a=${item.id}" target="_blank">BaseScan</a>
+        </div>
+      </div>
+    `;
+    grid.appendChild(card);
+  });
+}
+
+renderGallery();
+</script>
+</body>
+</html>

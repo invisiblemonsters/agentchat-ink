@@ -806,6 +806,11 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
+// Serve gallery page
+app.get('/gallery', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'gallery.html'));
+});
+
 // Serve buy page
 app.get('/buy', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'buy.html'));
